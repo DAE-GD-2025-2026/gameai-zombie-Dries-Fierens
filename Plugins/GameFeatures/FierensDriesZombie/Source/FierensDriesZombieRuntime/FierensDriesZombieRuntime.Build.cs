@@ -7,6 +7,7 @@ public class FierensDriesZombieRuntime : ModuleRules
 	public FierensDriesZombieRuntime(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
+		bUseRTTI = true;
 		
 		PublicIncludePaths.AddRange(
 			new string[] {
@@ -38,7 +39,8 @@ public class FierensDriesZombieRuntime : ModuleRules
 				"Engine",
 				"Slate",
 				"SlateCore",
-				"AIModule"
+				"AIModule", 
+				"EnhancedInput"
 				// ... add private dependencies that you statically link with here ...	
 			}
 			);
