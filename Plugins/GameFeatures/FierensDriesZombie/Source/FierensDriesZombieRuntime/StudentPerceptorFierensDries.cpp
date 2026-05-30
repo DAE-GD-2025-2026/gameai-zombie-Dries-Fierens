@@ -10,7 +10,7 @@
 #include "Village/House/House.h"
 #include "Zombies/BaseZombie.h"
 
-namespace
+namespace Keys
 {
 	const FName TargetEnemyKey(TEXT("TargetEnemy"));
 	const FName LastKnownEnemyLocationKey(TEXT("LastKnownEnemyLocation"));
@@ -18,7 +18,10 @@ namespace
 	const FName TargetItemKey(TEXT("TargetItem"));
 	const FName TargetHouseKey(TEXT("TargetHouse"));
 	const FName MoveLocationKey(TEXT("MoveLocation"));
+}
 
+namespace
+{
 	UBlackboardComponent* GetBlackboardFromOwner(AActor* Owner)
 	{
 		APawn* PawnOwner = Cast<APawn>(Owner);
@@ -63,7 +66,7 @@ namespace
 			return;
 		}
 
-		Blackboard->SetValueAsVector(MoveLocationKey, Actor->GetActorLocation());
+		Blackboard->SetValueAsVector(Keys::MoveLocationKey, Actor->GetActorLocation());
 	}
 
 	bool IsCloserToOwner(const AActor* Owner, const AActor* Candidate, const UObject* CurrentValue)
@@ -171,7 +174,7 @@ bool UStudentPerceptorFierensDries::TryPickupItem(ABaseItem* Item)
 
 	if (UBlackboardComponent* Blackboard = GetBlackboardFromOwner(OwnerActor))
 	{
-		ClearActorKeyIfMatching(Blackboard, TargetItemKey, Item);
+		ClearActorKeyIfMatching(Blackboard, Keys::TargetItemKey, Item);
 	}
 
 	return true;
@@ -190,7 +193,7 @@ void UStudentPerceptorFierensDries::MarkHouseAsSearched(AHouse* House)
 
 	if (UBlackboardComponent* Blackboard = GetBlackboardFromOwner(GetOwner()))
 	{
-		ClearActorKeyIfMatching(Blackboard, TargetHouseKey, House);
+		ClearActorKeyIfMatching(Blackboard, Keys::TargetHouseKey, House);
 	}
 }
 
@@ -227,15 +230,15 @@ void UStudentPerceptorFierensDries::OnPerceptionUpdated(AActor* Actor, FAIStimul
 
 		if (bEnemyThreatDetected)
 		{
-			Blackboard->SetValueAsObject(TargetEnemyKey, Actor);
-			Blackboard->SetValueAsBool(HasEnemyInSightKey, true);
-			Blackboard->SetValueAsVector(LastKnownEnemyLocationKey, SensedLocation);
+			Blackboard->SetValueAsObject(Keys::TargetEnemyKey, Actor);
+			Blackboard->SetValueAsBool(Keys::HasEnemyInSightKey, true);
+			Blackboard->SetValueAsVector(Keys::LastKnownEnemyLocationKey, SensedLocation);
 		}
-		else if (Blackboard->GetValueAsObject(TargetEnemyKey) == Actor)
+		else if (Blackboard->GetValueAsObject(Keys::TargetEnemyKey) == Actor)
 		{
-			Blackboard->ClearValue(TargetEnemyKey);
-			Blackboard->SetValueAsBool(HasEnemyInSightKey, false);
-			Blackboard->SetValueAsVector(LastKnownEnemyLocationKey, SensedLocation);
+			Blackboard->ClearValue(Keys::TargetEnemyKey);
+			Blackboard->SetValueAsBool(Keys::HasEnemyInSightKey, false);
+			Blackboard->SetValueAsVector(Keys::LastKnownEnemyLocationKey, SensedLocation);
 		}
 
 		return;
@@ -246,21 +249,21 @@ void UStudentPerceptorFierensDries::OnPerceptionUpdated(AActor* Actor, FAIStimul
 		if (!HasInventorySpace())
 		{
 			GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Orange, TEXT("Perception: inventory full, clearing TargetItem"));
-			ClearActorKeyIfMatching(Blackboard, TargetItemKey, Actor);
+			ClearActorKeyIfMatching(Blackboard, Keys::TargetItemKey, Actor);
 			return;
 		}
 
 		if (bSuccessfullySensed)
 		{
-			if (IsCloserToOwner(GetOwner(), Actor, Blackboard->GetValueAsObject(TargetItemKey)))
+			if (IsCloserToOwner(GetOwner(), Actor, Blackboard->GetValueAsObject(Keys::TargetItemKey)))
 			{
-				Blackboard->SetValueAsObject(TargetItemKey, Actor);
+				Blackboard->SetValueAsObject(Keys::TargetItemKey, Actor);
 				SetMoveLocationToActor(Blackboard, Actor);
 				
 				GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Cyan, FString::Printf(TEXT("Perception: set TargetItem to %s"), *Actor->GetName()));
 			}
 		}
-		else if (Blackboard->GetValueAsObject(TargetItemKey) == Actor)
+		else if (Blackboard->GetValueAsObject(Keys::TargetItemKey) == Actor)
 		{
 			GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Yellow, FString::Printf(TEXT("Perception: lost sight of %s, keeping TargetItem"), *Actor->GetName()));
 		}
@@ -276,18 +279,18 @@ void UStudentPerceptorFierensDries::OnPerceptionUpdated(AActor* Actor, FAIStimul
 
 	if (IsHouseSearched(House))
 	{
-		ClearActorKeyIfMatching(Blackboard, TargetHouseKey, House);
+		ClearActorKeyIfMatching(Blackboard, Keys::TargetHouseKey, House);
 		return;
 	}
 
 	if (bSuccessfullySensed &&
-		IsCloserToOwner(GetOwner(), House, Blackboard->GetValueAsObject(TargetHouseKey)))
+		IsCloserToOwner(GetOwner(), House, Blackboard->GetValueAsObject(Keys::TargetHouseKey)))
 	{
-		Blackboard->SetValueAsObject(TargetHouseKey, House);
+		Blackboard->SetValueAsObject(Keys::TargetHouseKey, House);
 		SetMoveLocationToActor(Blackboard, House);
 	}
 	else if (!bSuccessfullySensed)
 	{
-		ClearActorKeyIfMatching(Blackboard, TargetHouseKey, House);
+		ClearActorKeyIfMatching(Blackboard, Keys::TargetHouseKey, House);
 	}
 }
