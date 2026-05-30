@@ -9,6 +9,9 @@
 #include "Perception/AIPerceptionSystem.h"
 #include "Village/House/House.h"
 #include "Zombies/BaseZombie.h"
+#include "Common/HealthComponent.h"
+#include "Common/StaminaComponent.h"
+#include "Engine/Engine.h"
 
 namespace Keys
 {
@@ -18,6 +21,10 @@ namespace Keys
 	const FName TargetItemKey(TEXT("TargetItem"));
 	const FName TargetHouseKey(TEXT("TargetHouse"));
 	const FName MoveLocationKey(TEXT("MoveLocation"));
+	const FName NeedsFoodKey(TEXT("NeedsFood"));
+	const FName NeedsMedkitKey(TEXT("NeedsMedkit"));
+	const FName HasWeaponKey(TEXT("HasWeapon"));
+	const FName CanFightEnemyKey(TEXT("CanFightEnemy"));
 }
 
 namespace
@@ -95,6 +102,25 @@ namespace
 
 		return SenseClass == UAISense_Damage::StaticClass();
 	}
+	
+	UHealthComponent* GetHealthFromOwner(AActor* Owner)
+	{
+		return Owner != nullptr
+			? Owner->FindComponentByClass<UHealthComponent>()
+			: nullptr;
+	}
+
+	UStaminaComponent* GetStaminaFromOwner(AActor* Owner)
+	{
+		return Owner != nullptr
+			? Owner->FindComponentByClass<UStaminaComponent>()
+			: nullptr;
+	}
+
+	bool IsWeaponItemType(const EItemType ItemType)
+	{
+		return ItemType == EItemType::Pistol || ItemType == EItemType::Shotgun;
+	}
 }
 
 UStudentPerceptorFierensDries::UStudentPerceptorFierensDries()
@@ -161,10 +187,15 @@ bool UStudentPerceptorFierensDries::TryPickupItem(ABaseItem* Item)
 		return false;
 	}
 
-	const int32 FreeSlot = FindFreeInventorySlot();
+	int32 FreeSlot = FindFreeInventorySlot();
 	if (FreeSlot == INDEX_NONE)
 	{
-		return false;
+		RemoveGarbageItems();
+		FreeSlot = FindFreeInventorySlot();
+		if (FreeSlot == INDEX_NONE)
+		{
+			return false;
+		}
 	}
 
 	if (!InventoryComponent->GrabItem(FreeSlot, Item))
@@ -177,6 +208,7 @@ bool UStudentPerceptorFierensDries::TryPickupItem(ABaseItem* Item)
 		ClearActorKeyIfMatching(Blackboard, Keys::TargetItemKey, Item);
 	}
 
+	UpdateInventoryBlackboard();
 	return true;
 }
 
@@ -202,6 +234,168 @@ bool UStudentPerceptorFierensDries::IsHouseSearched(const AHouse* House) const
 	bool Result = House != nullptr && SearchedHouses.Contains(House);
 	if (Result) GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Yellow, FString::Printf(TEXT("%s already searched"), *House->GetName()));
 	return Result;
+}
+
+int32 UStudentPerceptorFierensDries::FindBestInventorySlot(EItemType ItemType) const
+{
+	const UInventoryComponent* InventoryComponent = GetInventoryFromOwner(GetOwner());
+	if (InventoryComponent == nullptr)
+	{
+		return INDEX_NONE;
+	}
+
+	const TArray<ABaseItem*>& Inventory = InventoryComponent->GetInventory();
+	int32 BestSlot = INDEX_NONE;
+	int32 BestValue = TNumericLimits<int32>::Max();
+
+	for (int32 Index = 0; Index < Inventory.Num(); ++Index)
+	{
+		const ABaseItem* Item = Inventory[Index];
+		if (Item == nullptr || Item->GetItemType() != ItemType || Item->GetValue() <= 0)
+		{
+			continue;
+		}
+
+		if (Item->GetValue() < BestValue)
+		{
+			BestValue = Item->GetValue();
+			BestSlot = Index;
+		}
+	}
+
+	return BestSlot;
+}
+
+bool UStudentPerceptorFierensDries::HasInventoryItemType(EItemType ItemType) const
+{
+	return FindBestInventorySlot(ItemType) != INDEX_NONE;
+}
+
+bool UStudentPerceptorFierensDries::HasWeaponInInventory() const
+{
+	const UInventoryComponent* InventoryComponent = GetInventoryFromOwner(GetOwner());
+	if (InventoryComponent == nullptr)
+	{
+		return false;
+	}
+
+	const TArray<ABaseItem*>& Inventory = InventoryComponent->GetInventory();
+	for (const ABaseItem* Item : Inventory)
+	{
+		if (Item != nullptr && Item->GetValue() > 0 && IsWeaponItemType(Item->GetItemType()))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+int32 UStudentPerceptorFierensDries::RemoveGarbageItems()
+{
+	UInventoryComponent* InventoryComponent = GetInventoryFromOwner(GetOwner());
+	if (InventoryComponent == nullptr)
+	{
+		return 0;
+	}
+
+	int32 RemovedCount = 0;
+	const TArray<ABaseItem*>& Inventory = InventoryComponent->GetInventory();
+
+	for (int32 Index = Inventory.Num() - 1; Index >= 0; --Index)
+	{
+		ABaseItem* Item = Inventory[Index];
+		if (Item == nullptr)
+		{
+			continue;
+		}
+
+		if (Item->GetItemType() == EItemType::Garbage || Item->GetValue() <= 0)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Orange, FString::Printf(TEXT("Removing garbage item from slot %d: %s"), Index, *Item->GetName()));
+
+			if (InventoryComponent->RemoveItem(Index))
+			{
+				++RemovedCount;
+			}
+		}
+	}
+
+	return RemovedCount;
+}
+
+void UStudentPerceptorFierensDries::UpdateInventoryBlackboard()
+{
+	UBlackboardComponent* Blackboard = GetBlackboardFromOwner(GetOwner());
+	const UHealthComponent* HealthComponent = GetHealthFromOwner(GetOwner());
+	const UStaminaComponent* StaminaComponent = GetStaminaFromOwner(GetOwner());
+	
+	if (Blackboard == nullptr || HealthComponent == nullptr || StaminaComponent == nullptr)
+	{
+		return;
+	}
+	
+	RemoveGarbageItems();
+
+	const bool bHasFood = HasInventoryItemType(EItemType::Food);
+	const bool bHasMedkit = HasInventoryItemType(EItemType::Medkit);
+	const bool bHasWeapon = HasWeaponInInventory();
+
+	const bool bNeedsFood = bHasFood && StaminaComponent->GetCurrentStamina() <= LowStaminaThreshold;
+	const bool bNeedsMedkit = bHasMedkit && HealthComponent->GetHealth() <= LowHealthThreshold;
+	const bool bCanFightEnemy = bHasWeapon && !bNeedsMedkit;
+
+	Blackboard->SetValueAsBool(Keys::NeedsFoodKey, bNeedsFood);
+	Blackboard->SetValueAsBool(Keys::NeedsMedkitKey, bNeedsMedkit);
+	Blackboard->SetValueAsBool(Keys::HasWeaponKey, bHasWeapon);
+	Blackboard->SetValueAsBool(Keys::CanFightEnemyKey, bCanFightEnemy);
+}
+
+bool UStudentPerceptorFierensDries::UseBestInventoryItem(EItemType ItemType)
+{
+	UInventoryComponent* InventoryComponent = GetInventoryFromOwner(GetOwner());
+	if (InventoryComponent == nullptr)
+	{
+		GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Red, TEXT("UseBestInventoryItem failed: InventoryComponent not found"));
+		return false;
+	}
+
+	const int32 SlotIndex = FindBestInventorySlot(ItemType);
+	if (SlotIndex == INDEX_NONE)
+	{
+		GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Red, TEXT("UseBestInventoryItem failed: no matching item found"));
+		UpdateInventoryBlackboard();
+		return false;
+	}
+
+	const TArray<ABaseItem*>& Inventory = InventoryComponent->GetInventory();
+	ABaseItem* Item = Inventory[SlotIndex];
+	if (Item == nullptr)
+	{	
+		GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Red, TEXT("UseBestInventoryItem failed: slot item is null"));
+		UpdateInventoryBlackboard();
+		return false;
+	}
+
+	if (!InventoryComponent->UseItem(SlotIndex))
+	{
+		GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Red, FString::Printf(TEXT("UseBestInventoryItem failed: could not use %s from slot %d"), *Item->GetName(), SlotIndex));
+		UpdateInventoryBlackboard();
+		return false;
+	}
+	
+	GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Red, FString::Printf(TEXT("Used %s from slot %d"), *Item->GetName(), SlotIndex));
+
+	const TArray<ABaseItem*>& UpdatedInventory = InventoryComponent->GetInventory();
+	ABaseItem* UpdatedItem = UpdatedInventory.IsValidIndex(SlotIndex) ? UpdatedInventory[SlotIndex] : nullptr;
+	if (UpdatedItem != nullptr && (UpdatedItem->GetItemType() == EItemType::Garbage || UpdatedItem->GetValue() <= 0))
+	{
+		InventoryComponent->RemoveItem(SlotIndex);
+		GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Orange, FString::Printf(TEXT("Removed used-up item from slot %d"), SlotIndex));
+	}
+
+	UpdateInventoryBlackboard();
+	return true;
 }
 
 void UStudentPerceptorFierensDries::OnPerceptionUpdated(AActor* Actor, FAIStimulus Stimulus)

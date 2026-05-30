@@ -8,6 +8,7 @@
 #include "Perception/AISenseConfig_Damage.h"
 #include "Perception/AISenseConfig_Sight.h"
 #include "Perception/AISense_Damage.h"
+#include "Items/ItemType.h"
 #include "StudentPerceptorFierensDries.generated.h"
 
 class ABaseItem;
@@ -34,11 +35,31 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Loot")
 	bool IsHouseSearched(const AHouse* House) const;
+	
+	UFUNCTION(BlueprintCallable, Category = "Inventory")
+	void UpdateInventoryBlackboard();
 
+	UFUNCTION(BlueprintCallable, Category = "Inventory")
+	bool UseBestInventoryItem(EItemType ItemType);
+
+	UFUNCTION(BlueprintCallable, Category = "Inventory")
+	int32 RemoveGarbageItems();
+
+	UFUNCTION(BlueprintPure, Category = "Inventory")
+	bool HasWeaponInInventory() const;
+	
 private:
 	int32 FindFreeInventorySlot() const;
 	bool HasInventorySpace() const;
-
+	int32 FindBestInventorySlot(EItemType ItemType) const;
+	bool HasInventoryItemType(EItemType ItemType) const;
+	
 	UPROPERTY(Transient)
 	TSet<TObjectPtr<AHouse>> SearchedHouses;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Inventory")
+	float LowStaminaThreshold{3.5f};
+
+	UPROPERTY(EditDefaultsOnly, Category = "Inventory")
+	float LowHealthThreshold{5.f};
 };
