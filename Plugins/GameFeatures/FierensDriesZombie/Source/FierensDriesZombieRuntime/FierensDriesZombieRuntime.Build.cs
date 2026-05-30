@@ -40,7 +40,8 @@ public class FierensDriesZombieRuntime : ModuleRules
 				"Slate",
 				"SlateCore",
 				"AIModule", 
-				"EnhancedInput"
+				"EnhancedInput",
+				"GameAI_Zombie"
 				// ... add private dependencies that you statically link with here ...	
 			}
 			);
