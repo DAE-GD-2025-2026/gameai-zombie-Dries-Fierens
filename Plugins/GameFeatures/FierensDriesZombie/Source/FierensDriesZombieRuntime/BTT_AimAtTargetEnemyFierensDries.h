@@ -3,19 +3,19 @@
 #include "CoreMinimal.h"
 #include "BehaviorTree/BTTaskNode.h"
 #include "BehaviorTree/BehaviorTreeTypes.h"
-#include "BTT_MarkHouseSearchedFierensDries.generated.h"
+#include "BTT_AimAtTargetEnemyFierensDries.generated.h"
 
 UCLASS()
-class FIERENSDRIESZOMBIERUNTIME_API UBTT_MarkHouseSearchedFierensDries : public UBTTaskNode
+class FIERENSDRIESZOMBIERUNTIME_API UBTT_AimAtTargetEnemyFierensDries : public UBTTaskNode
 {
 	GENERATED_BODY()
 
 public:
-	UBTT_MarkHouseSearchedFierensDries();
+	UBTT_AimAtTargetEnemyFierensDries();
 	
 	virtual EBTNodeResult::Type ExecuteTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory) override;
 
 protected:
 	UPROPERTY(EditAnywhere, Category = "Blackboard")
-	FBlackboardKeySelector TargetHouseKey;
+	FBlackboardKeySelector TargetEnemyKey;
 };

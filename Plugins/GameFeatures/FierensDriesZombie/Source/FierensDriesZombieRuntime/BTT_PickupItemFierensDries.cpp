@@ -15,16 +15,6 @@ UBTT_PickupItemFierensDries::UBTT_PickupItemFierensDries()
 	TargetItemKey.SelectedKeyName = TEXT("TargetItem");
 }
 
-void UBTT_PickupItemFierensDries::InitializeFromAsset(UBehaviorTree& Asset)
-{
-	Super::InitializeFromAsset(Asset);
-
-	if (UBlackboardData* BlackboardAsset = GetBlackboardAsset())
-	{
-		TargetItemKey.ResolveSelectedKey(*BlackboardAsset);
-	}
-}
-
 EBTNodeResult::Type UBTT_PickupItemFierensDries::ExecuteTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory)
 {
 	AAIController* AIController = OwnerComp.GetAIOwner();

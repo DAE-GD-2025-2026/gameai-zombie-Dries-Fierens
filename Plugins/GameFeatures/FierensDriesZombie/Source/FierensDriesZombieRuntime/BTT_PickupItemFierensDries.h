@@ -12,8 +12,7 @@ class FIERENSDRIESZOMBIERUNTIME_API UBTT_PickupItemFierensDries : public UBTTask
 
 public:
 	UBTT_PickupItemFierensDries();
-
-	virtual void InitializeFromAsset(UBehaviorTree& Asset) override;
+	
 	virtual EBTNodeResult::Type ExecuteTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory) override;
 
 protected:

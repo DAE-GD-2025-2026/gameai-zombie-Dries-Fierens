@@ -27,6 +27,7 @@ namespace Keys
 	const FName CanFightEnemyKey(TEXT("CanFightEnemy"));
 }
 
+#pragma region HelperFunctions
 namespace
 {
 	UBlackboardComponent* GetBlackboardFromOwner(AActor* Owner)
@@ -122,6 +123,7 @@ namespace
 		return ItemType == EItemType::Pistol || ItemType == EItemType::Shotgun;
 	}
 }
+#pragma endregion
 
 UStudentPerceptorFierensDries::UStudentPerceptorFierensDries()
 {
@@ -138,34 +140,7 @@ void UStudentPerceptorFierensDries::BeginPlay()
 	}
 }
 
-int32 UStudentPerceptorFierensDries::FindFreeInventorySlot() const
-{
-	const UInventoryComponent* InventoryComponent =
-		GetOwner() != nullptr
-			? GetOwner()->FindComponentByClass<UInventoryComponent>()
-			: nullptr;
-
-	if (InventoryComponent == nullptr)
-	{
-		return INDEX_NONE;
-	}
-
-	const TArray<ABaseItem*>& Inventory = InventoryComponent->GetInventory();
-	for (int32 Index = 0; Index < Inventory.Num(); ++Index)
-	{
-		if (Inventory[Index] == nullptr)
-		{
-			return Index;
-		}
-	}
-
-	return INDEX_NONE;
-}
-
-bool UStudentPerceptorFierensDries::HasInventorySpace() const
-{
-	return FindFreeInventorySlot() != INDEX_NONE;
-}
+#pragma region Loot
 
 bool UStudentPerceptorFierensDries::TryPickupItem(ABaseItem* Item)
 {
@@ -234,6 +209,39 @@ bool UStudentPerceptorFierensDries::IsHouseSearched(const AHouse* House) const
 	bool Result = House != nullptr && SearchedHouses.Contains(House);
 	if (Result) GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Yellow, FString::Printf(TEXT("%s already searched"), *House->GetName()));
 	return Result;
+}
+
+#pragma endregion
+
+#pragma region Inventory
+
+int32 UStudentPerceptorFierensDries::FindFreeInventorySlot() const
+{
+	const UInventoryComponent* InventoryComponent =
+		GetOwner() != nullptr
+			? GetOwner()->FindComponentByClass<UInventoryComponent>()
+			: nullptr;
+
+	if (InventoryComponent == nullptr)
+	{
+		return INDEX_NONE;
+	}
+
+	const TArray<ABaseItem*>& Inventory = InventoryComponent->GetInventory();
+	for (int32 Index = 0; Index < Inventory.Num(); ++Index)
+	{
+		if (Inventory[Index] == nullptr)
+		{
+			return Index;
+		}
+	}
+
+	return INDEX_NONE;
+}
+
+bool UStudentPerceptorFierensDries::HasInventorySpace() const
+{
+	return FindFreeInventorySlot() != INDEX_NONE;
 }
 
 int32 UStudentPerceptorFierensDries::FindBestInventorySlot(EItemType ItemType) const
@@ -397,6 +405,85 @@ bool UStudentPerceptorFierensDries::UseBestInventoryItem(EItemType ItemType)
 	UpdateInventoryBlackboard();
 	return true;
 }
+
+#pragma endregion
+
+#pragma region Combat
+
+int32 UStudentPerceptorFierensDries::FindWeaponSlotForTarget(float TargetDistance) const
+{
+	if (TargetDistance <= PreferredShotgunRange)
+	{
+		const int32 ShotgunSlot = FindBestInventorySlot(EItemType::Shotgun);
+		if (ShotgunSlot != INDEX_NONE)
+		{
+			return ShotgunSlot;
+		}
+	}
+
+	const int32 PistolSlot = FindBestInventorySlot(EItemType::Pistol);
+	if (PistolSlot != INDEX_NONE)
+	{
+		return PistolSlot;
+	}
+
+	return FindBestInventorySlot(EItemType::Shotgun);
+}
+
+bool UStudentPerceptorFierensDries::AimAtActor(const AActor* TargetActor)
+{
+	AActor* OwnerActor = GetOwner();
+	if (OwnerActor == nullptr || TargetActor == nullptr)
+	{
+		return false;
+	}
+
+	FVector Direction = TargetActor->GetActorLocation() - OwnerActor->GetActorLocation();
+	Direction.Z = 0.0f;
+	if (Direction.IsNearlyZero())
+	{
+		return false;
+	}
+
+	OwnerActor->SetActorRotation(Direction.Rotation());
+	return true;
+}
+
+bool UStudentPerceptorFierensDries::ShootBestWeaponAtActor(const AActor* TargetActor)
+{
+	AActor* OwnerActor = GetOwner();
+	UInventoryComponent* InventoryComponent = GetInventoryFromOwner(OwnerActor);
+	if (OwnerActor == nullptr || TargetActor == nullptr || InventoryComponent == nullptr)
+	{
+		return false;
+	}
+
+	AimAtActor(TargetActor);
+
+	const float TargetDistance = FVector::Dist(OwnerActor->GetActorLocation(), TargetActor->GetActorLocation());
+	const int32 SlotIndex = FindWeaponSlotForTarget(TargetDistance);
+	if (SlotIndex == INDEX_NONE)
+	{
+		return false;
+	}
+
+	if (!InventoryComponent->UseItem(SlotIndex))
+	{
+		return false;
+	}
+
+	const TArray<ABaseItem*>& Inventory = InventoryComponent->GetInventory();
+	ABaseItem* UsedItem = Inventory.IsValidIndex(SlotIndex) ? Inventory[SlotIndex] : nullptr;
+	if (UsedItem != nullptr && (UsedItem->GetItemType() == EItemType::Garbage || UsedItem->GetValue() <= 0))
+	{
+		InventoryComponent->RemoveItem(SlotIndex);
+	}
+
+	UpdateInventoryBlackboard();
+	return true;
+}
+
+#pragma endregion
 
 void UStudentPerceptorFierensDries::OnPerceptionUpdated(AActor* Actor, FAIStimulus Stimulus)
 {

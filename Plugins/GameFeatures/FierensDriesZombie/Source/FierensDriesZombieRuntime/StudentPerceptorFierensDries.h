@@ -48,11 +48,18 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Inventory")
 	bool HasWeaponInInventory() const;
 	
+	UFUNCTION(BlueprintCallable, Category = "Combat")
+	bool AimAtActor(const AActor* TargetActor);
+
+	UFUNCTION(BlueprintCallable, Category = "Combat")
+	bool ShootBestWeaponAtActor(const AActor* TargetActor);
+	
 private:
 	int32 FindFreeInventorySlot() const;
 	bool HasInventorySpace() const;
 	int32 FindBestInventorySlot(EItemType ItemType) const;
 	bool HasInventoryItemType(EItemType ItemType) const;
+	int32 FindWeaponSlotForTarget(float TargetDistance) const;
 	
 	UPROPERTY(Transient)
 	TSet<TObjectPtr<AHouse>> SearchedHouses;
@@ -62,4 +69,7 @@ private:
 
 	UPROPERTY(EditDefaultsOnly, Category = "Inventory")
 	float LowHealthThreshold{5.f};
+	
+	UPROPERTY(EditDefaultsOnly, Category = "Combat")
+	float PreferredShotgunRange{75.f};
 };
