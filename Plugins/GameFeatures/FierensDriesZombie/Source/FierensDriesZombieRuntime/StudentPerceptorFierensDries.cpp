@@ -4,14 +4,14 @@
 
 #include "AIController.h"
 #include "BehaviorTree/BlackboardComponent.h"
+#include "Common/HealthComponent.h"
 #include "Common/InventoryComponent.h"
+#include "Common/StaminaComponent.h"
+#include "Engine/Engine.h"
 #include "Items/BaseItem.h"
 #include "Perception/AIPerceptionSystem.h"
 #include "Village/House/House.h"
 #include "Zombies/BaseZombie.h"
-#include "Common/HealthComponent.h"
-#include "Common/StaminaComponent.h"
-#include "Engine/Engine.h"
 
 namespace Keys
 {
@@ -54,7 +54,7 @@ namespace
 			: nullptr;
 	}
 
-	void ClearActorKeyIfMatching(UBlackboardComponent* Blackboard, const FName& Key, const AActor* Actor)
+	void ClearActorKey(UBlackboardComponent* Blackboard, const FName& Key, const AActor* Actor)
 	{
 		if (Blackboard == nullptr || Actor == nullptr)
 		{
@@ -122,6 +122,11 @@ namespace
 	{
 		return ItemType == EItemType::Pistol || ItemType == EItemType::Shotgun;
 	}
+
+	bool IsConsumableItemType(const EItemType ItemType)
+	{
+		return ItemType == EItemType::Food || ItemType == EItemType::Medkit;
+	}
 }
 #pragma endregion
 
@@ -138,6 +143,8 @@ void UStudentPerceptorFierensDries::BeginPlay()
 	{
 		PerceptionComp->OnTargetPerceptionUpdated.AddDynamic(this, &UStudentPerceptorFierensDries::OnPerceptionUpdated);
 	}
+
+	UpdateInventoryBlackboard();
 }
 
 #pragma region Loot
@@ -145,7 +152,7 @@ void UStudentPerceptorFierensDries::BeginPlay()
 bool UStudentPerceptorFierensDries::TryPickupItem(ABaseItem* Item)
 {
 	AActor* OwnerActor = GetOwner();
-	if (OwnerActor == nullptr || Item == nullptr)
+	if (OwnerActor == nullptr || Item == nullptr || !IsValid(Item) || Item->IsActorBeingDestroyed() || Item->IsHidden())
 	{
 		return false;
 	}
@@ -156,34 +163,74 @@ bool UStudentPerceptorFierensDries::TryPickupItem(ABaseItem* Item)
 		return false;
 	}
 
+	if (!ShouldTargetItem(Item))
+	{
+		ForgetKnownItem(Item);
+		RefreshTargetItem();
+		return false;
+	}
+
 	const float PickupRangeSq = FMath::Square(InventoryComponent->GetPickupRange());
 	if (FVector::DistSquared(OwnerActor->GetActorLocation(), Item->GetActorLocation()) > PickupRangeSq)
 	{
 		return false;
 	}
 
+	CleanInventory();
+
+	const EItemType ItemType = Item->GetItemType();
+	int32 ExistingSlot = FindBestInventorySlot(ItemType);
+	if (ExistingSlot != INDEX_NONE)
+	{
+		const TArray<ABaseItem*>& Inventory = InventoryComponent->GetInventory();
+		ABaseItem* ExistingItem = Inventory.IsValidIndex(ExistingSlot) ? Inventory[ExistingSlot] : nullptr;
+		if (ExistingItem != nullptr)
+		{
+			if (Item->GetValue() <= ExistingItem->GetValue())
+			{
+				ForgetKnownItem(Item);
+				RefreshTargetItem();
+				return false;
+			}
+
+			if (IsConsumableItemType(ItemType) && CanUseConsumableNow(ItemType))
+			{
+				UseBestInventoryItem(ItemType);
+				CleanInventory();
+				ExistingSlot = FindBestInventorySlot(ItemType);
+			}
+
+			if (ExistingSlot != INDEX_NONE)
+			{
+				InventoryComponent->RemoveItem(ExistingSlot);
+			}
+		}
+	}
+
+	CleanInventory();
+
 	int32 FreeSlot = FindFreeInventorySlot();
 	if (FreeSlot == INDEX_NONE)
 	{
-		RemoveGarbageItems();
-		FreeSlot = FindFreeInventorySlot();
-		if (FreeSlot == INDEX_NONE)
-		{
-			return false;
-		}
+		RefreshTargetItem();
+		return false;
 	}
 
 	if (!InventoryComponent->GrabItem(FreeSlot, Item))
 	{
+		RefreshTargetItem();
 		return false;
 	}
 
+	ForgetKnownItem(Item);
+
 	if (UBlackboardComponent* Blackboard = GetBlackboardFromOwner(OwnerActor))
 	{
-		ClearActorKeyIfMatching(Blackboard, Keys::TargetItemKey, Item);
+		ClearActorKey(Blackboard, Keys::TargetItemKey, Item);
 	}
 
 	UpdateInventoryBlackboard();
+	RefreshTargetItem();
 	return true;
 }
 
@@ -194,21 +241,104 @@ void UStudentPerceptorFierensDries::MarkHouseAsSearched(AHouse* House)
 		return;
 	}
 
-	
 	GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Yellow, FString::Printf(TEXT("Searching: %s"), *House->GetName()));
 	SearchedHouses.Add(House);
+	ForgetKnownHouse(House);
 
 	if (UBlackboardComponent* Blackboard = GetBlackboardFromOwner(GetOwner()))
 	{
-		ClearActorKeyIfMatching(Blackboard, Keys::TargetHouseKey, House);
+		ClearActorKey(Blackboard, Keys::TargetHouseKey, House);
 	}
+
+	RefreshTargetHouse();
 }
 
 bool UStudentPerceptorFierensDries::IsHouseSearched(const AHouse* House) const
 {
-	bool Result = House != nullptr && SearchedHouses.Contains(House);
-	if (Result) GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Yellow, FString::Printf(TEXT("%s already searched"), *House->GetName()));
-	return Result;
+	return House != nullptr && SearchedHouses.Contains(House);
+}
+
+bool UStudentPerceptorFierensDries::IsHigherPriorityHouse(const AHouse* Candidate, const AHouse* CurrentBest) const
+{
+	if (Candidate == nullptr)
+	{
+		return false;
+	}
+
+	if (CurrentBest == nullptr || GetOwner() == nullptr)
+	{
+		return true;
+	}
+
+	const float CandidateDistanceSq =
+		FVector::DistSquared(GetOwner()->GetActorLocation(), Candidate->GetActorLocation());
+	const float CurrentDistanceSq =
+		FVector::DistSquared(GetOwner()->GetActorLocation(), CurrentBest->GetActorLocation());
+
+	return CandidateDistanceSq < CurrentDistanceSq;
+}
+
+void UStudentPerceptorFierensDries::CleanupKnownHouses()
+{
+	for (auto It = KnownHouses.CreateIterator(); It; ++It)
+	{
+		AHouse* House = It->Get();
+		if (IsHouseSearched(House))
+		{
+			It.RemoveCurrent();
+		}
+	}
+}
+
+void UStudentPerceptorFierensDries::ForgetKnownHouse(const AHouse* House)
+{
+	if (House == nullptr)
+	{
+		return;
+	}
+
+	KnownHouses.Remove(House);
+}
+
+void UStudentPerceptorFierensDries::RefreshTargetHouse()
+{
+	UBlackboardComponent* Blackboard = GetBlackboardFromOwner(GetOwner());
+	if (Blackboard == nullptr)
+	{
+		return;
+	}
+
+	CleanupKnownHouses();
+
+	AHouse* BestHouse = nullptr;
+
+	for (const TObjectPtr<AHouse>& HousePtr : KnownHouses)
+	{
+		AHouse* House = HousePtr.Get();
+		if (IsHouseSearched(House))
+		{
+			continue;
+		}
+
+		if (IsHigherPriorityHouse(House, BestHouse))
+		{
+			BestHouse = House;
+		}
+	}
+
+	if (BestHouse != nullptr)
+	{
+		Blackboard->SetValueAsObject(Keys::TargetHouseKey, BestHouse);
+
+		if (Blackboard->GetValueAsObject(Keys::TargetItemKey) == nullptr)
+		{
+			SetMoveLocationToActor(Blackboard, BestHouse);
+		}
+	}
+	else
+	{
+		Blackboard->ClearValue(Keys::TargetHouseKey);
+	}
 }
 
 #pragma endregion
@@ -244,7 +374,38 @@ bool UStudentPerceptorFierensDries::HasInventorySpace() const
 	return FindFreeInventorySlot() != INDEX_NONE;
 }
 
+// Make sure that there is at least one of each item type
 int32 UStudentPerceptorFierensDries::FindBestInventorySlot(EItemType ItemType) const
+{
+	const UInventoryComponent* InventoryComponent = GetInventoryFromOwner(GetOwner());
+	if (InventoryComponent == nullptr)
+	{
+		return INDEX_NONE;
+	}
+
+	const TArray<ABaseItem*>& Inventory = InventoryComponent->GetInventory();
+	int32 BestSlot = INDEX_NONE;
+	int32 BestValue = TNumericLimits<int32>::Lowest();
+
+	for (int32 Index = 0; Index < Inventory.Num(); ++Index)
+	{
+		const ABaseItem* Item = Inventory[Index];
+		if (Item == nullptr || Item->GetItemType() != ItemType || Item->GetValue() <= 0)
+		{
+			continue;
+		}
+
+		if (Item->GetValue() > BestValue)
+		{
+			BestValue = Item->GetValue();
+			BestSlot = Index;
+		}
+	}
+
+	return BestSlot;
+}
+
+int32 UStudentPerceptorFierensDries::FindLowestValueInventorySlot(EItemType ItemType) const
 {
 	const UInventoryComponent* InventoryComponent = GetInventoryFromOwner(GetOwner());
 	if (InventoryComponent == nullptr)
@@ -281,33 +442,38 @@ bool UStudentPerceptorFierensDries::HasInventoryItemType(EItemType ItemType) con
 
 bool UStudentPerceptorFierensDries::HasWeaponInInventory() const
 {
-	const UInventoryComponent* InventoryComponent = GetInventoryFromOwner(GetOwner());
-	if (InventoryComponent == nullptr)
-	{
-		return false;
-	}
-
-	const TArray<ABaseItem*>& Inventory = InventoryComponent->GetInventory();
-	for (const ABaseItem* Item : Inventory)
-	{
-		if (Item != nullptr && Item->GetValue() > 0 && IsWeaponItemType(Item->GetItemType()))
-		{
-			return true;
-		}
-	}
-
-	return false;
+	return HasInventoryItemType(EItemType::Shotgun) || HasInventoryItemType(EItemType::Pistol);
 }
 
-int32 UStudentPerceptorFierensDries::RemoveGarbageItems()
+bool UStudentPerceptorFierensDries::CanUseConsumableNow(EItemType ItemType) const
+{
+	switch (ItemType)
+	{
+	case EItemType::Food:
+	{
+		const UStaminaComponent* StaminaComponent = GetStaminaFromOwner(GetOwner());
+		return StaminaComponent != nullptr &&
+			StaminaComponent->GetCurrentStamina() < StaminaComponent->GetMaxStamina();
+	}
+	case EItemType::Medkit:
+	{
+		const UHealthComponent* HealthComponent = GetHealthFromOwner(GetOwner());
+		return HealthComponent != nullptr &&
+			HealthComponent->GetHealth() < HealthComponent->GetMaxHealth();
+	}
+	default:
+		return false;
+	}
+}
+
+void UStudentPerceptorFierensDries::RemoveGarbageItems()
 {
 	UInventoryComponent* InventoryComponent = GetInventoryFromOwner(GetOwner());
 	if (InventoryComponent == nullptr)
 	{
-		return 0;
+		return;
 	}
-
-	int32 RemovedCount = 0;
+	
 	const TArray<ABaseItem*>& Inventory = InventoryComponent->GetInventory();
 
 	for (int32 Index = Inventory.Num() - 1; Index >= 0; --Index)
@@ -322,14 +488,257 @@ int32 UStudentPerceptorFierensDries::RemoveGarbageItems()
 		{
 			GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Orange, FString::Printf(TEXT("Removing garbage item from slot %d: %s"), Index, *Item->GetName()));
 
-			if (InventoryComponent->RemoveItem(Index))
-			{
-				++RemovedCount;
-			}
+			InventoryComponent->RemoveItem(Index);
+		}
+	}
+}
+
+void UStudentPerceptorFierensDries::ReplaceItems()
+{
+	UInventoryComponent* InventoryComponent = GetInventoryFromOwner(GetOwner());
+	if (InventoryComponent == nullptr)
+	{
+		return;
+	}
+
+	const TArray<ABaseItem*>& Inventory = InventoryComponent->GetInventory();
+	TMap<EItemType, int32> BestSlotsByType;
+	TMap<EItemType, int32> BestValuesByType;
+
+	for (int32 Index = 0; Index < Inventory.Num(); ++Index)
+	{
+		const ABaseItem* Item = Inventory[Index];
+		if (Item == nullptr || Item->GetValue() <= 0 || Item->GetItemType() == EItemType::Garbage)
+		{
+			continue;
+		}
+
+		const EItemType ItemType = Item->GetItemType();
+		const int32 ItemValue = Item->GetValue();
+
+		const int32* CurrentBestValue = BestValuesByType.Find(ItemType);
+		if (CurrentBestValue == nullptr || ItemValue > *CurrentBestValue)
+		{
+			BestValuesByType.Add(ItemType, ItemValue);
+			BestSlotsByType.Add(ItemType, Index);
 		}
 	}
 
-	return RemovedCount;
+	for (int32 Index = Inventory.Num() - 1; Index >= 0; --Index)
+	{
+		ABaseItem* Item = Inventory[Index];
+		if (Item == nullptr || Item->GetValue() <= 0 || Item->GetItemType() == EItemType::Garbage)
+		{
+			continue;
+		}
+
+		const int32* BestSlot = BestSlotsByType.Find(Item->GetItemType());
+		if (BestSlot != nullptr && *BestSlot != Index)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Orange, FString::Printf(TEXT("Removing duplicate item from slot %d: %s"), Index, *Item->GetName()));
+			InventoryComponent->RemoveItem(Index);
+		}
+	}
+}
+
+void UStudentPerceptorFierensDries::CleanInventory()
+{
+	RemoveGarbageItems();
+	ReplaceItems();
+}
+
+bool UStudentPerceptorFierensDries::ShouldTargetItem(const ABaseItem* Item) const
+{
+	if (Item == nullptr || !IsValid(Item) || Item->IsActorBeingDestroyed() || Item->IsHidden())
+	{
+		return false;
+	}
+
+	if (Item->GetItemType() == EItemType::Garbage || Item->GetValue() <= 0)
+	{
+		return false;
+	}
+
+	const int32 BestOwnedSlot = FindBestInventorySlot(Item->GetItemType());
+	if (BestOwnedSlot == INDEX_NONE)
+	{
+		return true;
+	}
+
+	const UInventoryComponent* InventoryComponent = GetInventoryFromOwner(GetOwner());
+	if (InventoryComponent == nullptr)
+	{
+		return false;
+	}
+
+	const TArray<ABaseItem*>& Inventory = InventoryComponent->GetInventory();
+	const ABaseItem* OwnedItem = Inventory.IsValidIndex(BestOwnedSlot) ? Inventory[BestOwnedSlot] : nullptr;
+	if (OwnedItem == nullptr)
+	{
+		return true;
+	}
+
+	return Item->GetValue() > OwnedItem->GetValue();
+}
+
+int32 UStudentPerceptorFierensDries::GetItemPriority(const ABaseItem* Item) const
+{
+	if (!ShouldTargetItem(Item))
+	{
+		return -1;
+	}
+
+	const UHealthComponent* HealthComponent = GetHealthFromOwner(GetOwner());
+	const UStaminaComponent* StaminaComponent = GetStaminaFromOwner(GetOwner());
+	
+	const bool bLowHealth =
+		HealthComponent != nullptr &&
+		HealthComponent->GetHealth() <= LowHealthThreshold;
+	const bool bLowStamina =
+		StaminaComponent != nullptr &&
+		StaminaComponent->GetCurrentStamina() <= LowStaminaThreshold;
+
+	switch (Item->GetItemType())
+	{
+	case EItemType::Medkit:
+		return bLowHealth ? 5 : 2;
+
+	case EItemType::Shotgun:
+	case EItemType::Pistol:
+		return HasWeaponInInventory() ? 3 : 4;
+
+	case EItemType::Food:
+		return bLowStamina ? 3 : 1;
+
+	default:
+		return 0;
+	}
+}
+
+int32 UStudentPerceptorFierensDries::GetItemValue(const ABaseItem* Item) const
+{
+	if (Item == nullptr)
+	{
+		return 0;
+	}
+
+	const int32 BestOwnedSlot = FindBestInventorySlot(Item->GetItemType());
+	if (BestOwnedSlot == INDEX_NONE)
+	{
+		return Item->GetValue();
+	}
+
+	const UInventoryComponent* InventoryComponent = GetInventoryFromOwner(GetOwner());
+	if (InventoryComponent == nullptr)
+	{
+		return Item->GetValue();
+	}
+
+	const TArray<ABaseItem*>& Inventory = InventoryComponent->GetInventory();
+	const ABaseItem* OwnedItem = Inventory.IsValidIndex(BestOwnedSlot) ? Inventory[BestOwnedSlot] : nullptr;
+	if (OwnedItem == nullptr)
+	{
+		return Item->GetValue();
+	}
+
+	return Item->GetValue() - OwnedItem->GetValue();
+}
+
+// Priority order: Item type > Item Value > Distance
+bool UStudentPerceptorFierensDries::IsHigherPriorityItem(const ABaseItem* Candidate, const ABaseItem* CurrentBest) const
+{
+	if (Candidate == nullptr)
+	{
+		return false;
+	}
+
+	if (CurrentBest == nullptr)
+	{
+		return true;
+	}
+
+	const int32 CandidatePriority = GetItemPriority(Candidate);
+	const int32 CurrentPriority = GetItemPriority(CurrentBest);
+	if (CandidatePriority != CurrentPriority)
+	{
+		return CandidatePriority > CurrentPriority;
+	}
+
+	const int32 CandidateValue = GetItemValue(Candidate);
+	const int32 CurrentValue = GetItemValue(CurrentBest);
+	if (CandidateValue != CurrentValue)
+	{
+		return CandidateValue > CurrentValue;
+	}
+
+	if (GetOwner() == nullptr)
+	{
+		return false;
+	}
+
+	const float CandidateDistanceSq = FVector::DistSquared(GetOwner()->GetActorLocation(), Candidate->GetActorLocation());
+	const float CurrentDistanceSq = FVector::DistSquared(GetOwner()->GetActorLocation(), CurrentBest->GetActorLocation());
+	return CandidateDistanceSq < CurrentDistanceSq;
+}
+
+void UStudentPerceptorFierensDries::CleanupKnownItems()
+{
+	for (auto It = KnownItems.CreateIterator(); It; ++It)
+	{
+		ABaseItem* Item = It->Get();
+		if (!IsValid(Item) || Item->IsActorBeingDestroyed() || Item->IsHidden())
+		{
+			It.RemoveCurrent();
+		}
+	}
+}
+
+void UStudentPerceptorFierensDries::ForgetKnownItem(const ABaseItem* Item)
+{
+	if (Item == nullptr)
+	{
+		return;
+	}
+
+	KnownItems.Remove(Item);
+}
+
+void UStudentPerceptorFierensDries::RefreshTargetItem()
+{
+	UBlackboardComponent* Blackboard = GetBlackboardFromOwner(GetOwner());
+	if (Blackboard == nullptr)
+	{
+		return;
+	}
+
+	CleanupKnownItems();
+
+	ABaseItem* BestItem = nullptr;
+
+	for (const TObjectPtr<ABaseItem>& ItemPtr : KnownItems)
+	{
+		ABaseItem* Item = ItemPtr.Get();
+		if (!ShouldTargetItem(Item))
+		{
+			continue;
+		}
+
+		if (IsHigherPriorityItem(Item, BestItem))
+		{
+			BestItem = Item;
+		}
+	}
+
+	if (BestItem != nullptr)
+	{
+		Blackboard->SetValueAsObject(Keys::TargetItemKey, BestItem);
+		SetMoveLocationToActor(Blackboard, BestItem);
+	}
+	else
+	{
+		Blackboard->ClearValue(Keys::TargetItemKey);
+		RefreshTargetHouse();
+	}
 }
 
 void UStudentPerceptorFierensDries::UpdateInventoryBlackboard()
@@ -343,7 +752,7 @@ void UStudentPerceptorFierensDries::UpdateInventoryBlackboard()
 		return;
 	}
 	
-	RemoveGarbageItems();
+	CleanInventory();
 
 	const bool bHasFood = HasInventoryItemType(EItemType::Food);
 	const bool bHasMedkit = HasInventoryItemType(EItemType::Medkit);
@@ -357,6 +766,8 @@ void UStudentPerceptorFierensDries::UpdateInventoryBlackboard()
 	Blackboard->SetValueAsBool(Keys::NeedsMedkitKey, bNeedsMedkit);
 	Blackboard->SetValueAsBool(Keys::HasWeaponKey, bHasWeapon);
 	Blackboard->SetValueAsBool(Keys::CanFightEnemyKey, bCanFightEnemy);
+
+	RefreshTargetItem();
 }
 
 bool UStudentPerceptorFierensDries::UseBestInventoryItem(EItemType ItemType)
@@ -364,14 +775,12 @@ bool UStudentPerceptorFierensDries::UseBestInventoryItem(EItemType ItemType)
 	UInventoryComponent* InventoryComponent = GetInventoryFromOwner(GetOwner());
 	if (InventoryComponent == nullptr)
 	{
-		GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Red, TEXT("UseBestInventoryItem failed: InventoryComponent not found"));
 		return false;
 	}
 
-	const int32 SlotIndex = FindBestInventorySlot(ItemType);
+	const int32 SlotIndex = FindLowestValueInventorySlot(ItemType);
 	if (SlotIndex == INDEX_NONE)
 	{
-		GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Red, TEXT("UseBestInventoryItem failed: no matching item found"));
 		UpdateInventoryBlackboard();
 		return false;
 	}
@@ -380,14 +789,12 @@ bool UStudentPerceptorFierensDries::UseBestInventoryItem(EItemType ItemType)
 	ABaseItem* Item = Inventory[SlotIndex];
 	if (Item == nullptr)
 	{	
-		GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Red, TEXT("UseBestInventoryItem failed: slot item is null"));
 		UpdateInventoryBlackboard();
 		return false;
 	}
 
 	if (!InventoryComponent->UseItem(SlotIndex))
 	{
-		GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Red, FString::Printf(TEXT("UseBestInventoryItem failed: could not use %s from slot %d"), *Item->GetName(), SlotIndex));
 		UpdateInventoryBlackboard();
 		return false;
 	}
@@ -399,12 +806,11 @@ bool UStudentPerceptorFierensDries::UseBestInventoryItem(EItemType ItemType)
 	if (UpdatedItem != nullptr && (UpdatedItem->GetItemType() == EItemType::Garbage || UpdatedItem->GetValue() <= 0))
 	{
 		InventoryComponent->RemoveItem(SlotIndex);
-		GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Orange, FString::Printf(TEXT("Removed used-up item from slot %d"), SlotIndex));
 	}
 
 	UpdateInventoryBlackboard();
 	return true;
-}
+} 
 
 #pragma endregion
 
@@ -525,30 +931,14 @@ void UStudentPerceptorFierensDries::OnPerceptionUpdated(AActor* Actor, FAIStimul
 		return;
 	}
 
-	if (Actor->IsA(ABaseItem::StaticClass()))
+	if (ABaseItem* Item = Cast<ABaseItem>(Actor))
 	{
-		if (!HasInventorySpace())
-		{
-			GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Orange, TEXT("Perception: inventory full, clearing TargetItem"));
-			ClearActorKeyIfMatching(Blackboard, Keys::TargetItemKey, Actor);
-			return;
-		}
-
 		if (bSuccessfullySensed)
 		{
-			if (IsCloserToOwner(GetOwner(), Actor, Blackboard->GetValueAsObject(Keys::TargetItemKey)))
-			{
-				Blackboard->SetValueAsObject(Keys::TargetItemKey, Actor);
-				SetMoveLocationToActor(Blackboard, Actor);
-				
-				GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Cyan, FString::Printf(TEXT("Perception: set TargetItem to %s"), *Actor->GetName()));
-			}
-		}
-		else if (Blackboard->GetValueAsObject(Keys::TargetItemKey) == Actor)
-		{
-			GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Yellow, FString::Printf(TEXT("Perception: lost sight of %s, keeping TargetItem"), *Actor->GetName()));
+			KnownItems.Add(Item);
 		}
 
+		RefreshTargetItem();
 		return;
 	}
 
@@ -558,9 +948,16 @@ void UStudentPerceptorFierensDries::OnPerceptionUpdated(AActor* Actor, FAIStimul
 		return;
 	}
 
+	if (bSuccessfullySensed)
+	{
+		KnownHouses.Add(House);
+	}
+
+	RefreshTargetHouse();
+
 	if (IsHouseSearched(House))
 	{
-		ClearActorKeyIfMatching(Blackboard, Keys::TargetHouseKey, House);
+		ClearActorKey(Blackboard, Keys::TargetHouseKey, House);
 		return;
 	}
 
@@ -572,6 +969,6 @@ void UStudentPerceptorFierensDries::OnPerceptionUpdated(AActor* Actor, FAIStimul
 	}
 	else if (!bSuccessfullySensed)
 	{
-		ClearActorKeyIfMatching(Blackboard, Keys::TargetHouseKey, House);
+		ClearActorKey(Blackboard, Keys::TargetHouseKey, House);
 	}
 }

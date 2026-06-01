@@ -1,6 +1,4 @@
-﻿// Fill out your copyright notice in the Description page of Project Settings.
-
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
@@ -42,9 +40,6 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Inventory")
 	bool UseBestInventoryItem(EItemType ItemType);
 
-	UFUNCTION(BlueprintCallable, Category = "Inventory")
-	int32 RemoveGarbageItems();
-
 	UFUNCTION(BlueprintPure, Category = "Inventory")
 	bool HasWeaponInInventory() const;
 	
@@ -58,11 +53,37 @@ private:
 	int32 FindFreeInventorySlot() const;
 	bool HasInventorySpace() const;
 	int32 FindBestInventorySlot(EItemType ItemType) const;
+	int32 FindLowestValueInventorySlot(EItemType ItemType) const;
 	bool HasInventoryItemType(EItemType ItemType) const;
 	int32 FindWeaponSlotForTarget(float TargetDistance) const;
+
+	bool CanUseConsumableNow(EItemType ItemType) const;
+	bool ShouldTargetItem(const ABaseItem* Item) const;
+	int32 GetItemPriority(const ABaseItem* Item) const;
+	int32 GetItemValue(const ABaseItem* Item) const;
+	bool IsHigherPriorityItem(const ABaseItem* Candidate, const ABaseItem* CurrentBest) const;
+	bool IsHigherPriorityHouse(const AHouse* Candidate, const AHouse* CurrentBest) const;
+
+	void RefreshTargetItem();
+	void CleanupKnownItems();
+	void ForgetKnownItem(const ABaseItem* Item);
+
+	void RefreshTargetHouse();
+	void CleanupKnownHouses();
+	void ForgetKnownHouse(const AHouse* House);
+
+	void RemoveGarbageItems();
+	void ReplaceItems();
+	void CleanInventory();
 	
 	UPROPERTY(Transient)
 	TSet<TObjectPtr<AHouse>> SearchedHouses;
+
+	UPROPERTY(Transient)
+	TSet<TObjectPtr<AHouse>> KnownHouses;
+
+	UPROPERTY(Transient)
+	TSet<TObjectPtr<ABaseItem>> KnownItems;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Inventory")
 	float LowStaminaThreshold{3.5f};
@@ -71,5 +92,5 @@ private:
 	float LowHealthThreshold{5.f};
 	
 	UPROPERTY(EditDefaultsOnly, Category = "Combat")
-	float PreferredShotgunRange{75.f};
+	float PreferredShotgunRange{20.f};
 };
