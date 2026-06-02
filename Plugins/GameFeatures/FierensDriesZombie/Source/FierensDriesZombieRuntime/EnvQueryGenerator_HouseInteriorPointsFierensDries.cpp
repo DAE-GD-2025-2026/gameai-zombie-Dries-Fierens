@@ -53,9 +53,11 @@ void UEnvQueryGenerator_HouseInteriorPointsFierensDries::GenerateItems(FEnvQuery
 
 	const FHouseBounds Bounds = TargetHouse->GetBounds();
 
+	// Get inside area of the house (padding to avoid points too close to the wall)
 	const float UsableExtentX = FMath::Max(0.0f, Bounds.Extent.X - EdgePadding);
 	const float UsableExtentY = FMath::Max(0.0f, Bounds.Extent.Y - EdgePadding);
 
+	// Add points to the area/grid
 	TArray<FNavLocation> Points;
 	for (float X = -UsableExtentX; X <= UsableExtentX; X += PointSpacing)
 	{
@@ -65,11 +67,14 @@ void UEnvQueryGenerator_HouseInteriorPointsFierensDries::GenerateItems(FEnvQuery
 		}
 	}
 
+	// Go to origin if there are no points
 	if (Points.IsEmpty())
 	{
 		Points.Add(FNavLocation(Bounds.Origin));
 	}
 
+	// Make points available to EQS, 
+	// mostly to improve the house searching/pathfinding to the house
 	ProjectAndFilterNavPoints(Points, QueryInstance);
 	StoreNavPoints(Points, QueryInstance);
 }
